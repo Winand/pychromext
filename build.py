@@ -29,7 +29,6 @@ args.add_argument('--monitor', action='store_true')
 args = args.parse_args(sys.argv[1:])
 dir_ext = Path(args.path).resolve()
 
-manifest_pyext = "PYEXT"
 manifest_file = "manifest.py"
 output_dir = dir_ext/"build"
 file_names = set()
@@ -76,14 +75,11 @@ class Monitor():
         while forever:
             time.sleep(1)
 
-    def read_changes(self, h, flags):
-        #               handle, size, bWatchSubtree, dwNotifyFilter, overlapped
-        return win32file.ReadDirectoryChangesW(h, 8*1024, True, flags, None)
-
     def watcher(self):
         while True:
-            for action, path in self.read_changes(self.hDir,
-                                                  self.FILE_NOTIFY_CHANGE):
+            # handle, size, bWatchSubtree, dwNotifyFilter, overlapped
+            for action, path in win32file.ReadDirectoryChangesW(
+                    self.hDir, 8*1024, True, self.FILE_NOTIFY_CHANGE, None):
                 with self.loader_lock:
                     act = self.actions[action]
                     if act == 'update' and not self.dir_updates \
@@ -101,13 +97,8 @@ class Monitor():
             time.sleep(0.25)
 
 
-def read_block_comments(text):
-    comments = re.findall('/\*.*?\*/', text, flags=re.S)
-    comments = [i[2:-2].strip() for i in comments]
-    return comments
-
-
 def dot_js(path):
+    "Replace .py extension with .js"
     p = Path(path)
     if p.suffix.lower() == ".py":
         p = p.with_suffix(".js")
@@ -190,16 +181,17 @@ def build(filepath):
     filepath = Path(filepath)
     ext = filepath.suffix.lower()
     rel = filepath.relative_to(dir_ext)
+    dest = output_dir/rel
 #    print()
     if filepath.is_dir():
         print(time.strftime('%H:%M:%S'), "Create folder", rel, "...",
               flush=True, end='')
-        res = mkpath(output_dir/rel)
+        res = mkpath(dest)
         print('done' if res else 'failed')
     elif ext == ".py":
         print(time.strftime('%H:%M:%S'), "Compiling", rel, "...", flush=True,
               end='')
-        res = compile_py(filepath, (output_dir/rel).with_suffix(".js"))
+        res = compile_py(filepath, dest.with_suffix(".js"))
         print('done' if res else 'failed')
     else:
         print(time.strftime('%H:%M:%S'), 'Copy', rel, "...", flush=True,
@@ -207,7 +199,6 @@ def build(filepath):
         try:
 #            if ext in ('.html', '.htm'):
 #                scripts(filepath)
-            dest = output_dir/rel
             mkpath(dest.parent)
             shutil.copy(filepath, dest)
             print('done')
@@ -261,22 +252,23 @@ def scripts(p):
         print(s.get('src'))
 
 
+def file_change(file_name, actions):
+    if file_name == manifest_file:
+        rebuild_all()
+    else:
+        for i in file_names:
+            if fnmatch.fnmatch(file_name, i):
+                if actions[-1] in ('add', 'update', 'renamed_to'):
+                    build(dir_ext/file_name)
+                else:
+                    print(time.strftime('%H:%M:%S'), "Remove", file_name)
+                    target = output_dir/file_name
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        os.remove(target)
+                break  # already found
+
 rebuild_all()
 if args.monitor:
-    def file_change(file_name, actions):
-        if file_name == manifest_file:
-            rebuild_all()
-        else:
-            for i in file_names:
-                if fnmatch.fnmatch(file_name, i):
-                    if actions[-1] in ('add', 'update', 'renamed_to'):
-                        build(dir_ext/file_name)
-                    else:
-                        print(time.strftime('%H:%M:%S'), "Remove", file_name)
-                        target = output_dir/file_name
-                        if target.is_dir():
-                            shutil.rmtree(target)
-                        else:
-                            os.remove(target)
-                    break  # already found
     Monitor(dir_ext, file_change, forever=True)
