@@ -234,12 +234,15 @@ def rebuild_all():
                 n = None
                 for n, j in enumerate(glob.glob(str(dir_ext/i),
                                                 recursive=True)):
-                    if j not in processed:
+                    j = Path(j)
+                    if not j.exists():
+                        n = None
+                    elif j not in processed:
                         build(j)
                         processed.append(j)
                 if n is None:
                     print_err(time.strftime('%H:%M:%S'),
-                              "Source file not found:", i, newline=False)
+                              "Source path not found:", i, newline=False)
     print("--- finished ---")
 
 
@@ -266,7 +269,7 @@ def file_change(file_name, actions):
                     if target.is_dir():
                         shutil.rmtree(target)
                     else:
-                        os.remove(target)
+                        os.remove(dot_js(target))
                 break  # already found
 
 rebuild_all()
