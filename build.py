@@ -18,6 +18,7 @@ from pyscript import script2js, parser0
 import sys
 import os
 import re
+from bs4 import BeautifulSoup, Comment
 import fnmatch
 import glob
 import json
@@ -32,6 +33,8 @@ dir_ext = Path(args.path).resolve()
 manifest_file = "manifest.py"
 output_dir = dir_ext/"build"
 file_names = set()
+
+patt_css_url = re.compile(r'url\(["\']?(?P<url>[^"\']+)["\']?\)')
 
 
 def print_err(*e, newline=True):
@@ -48,6 +51,47 @@ def compile_py(src, dest):
         print_err(e)
         return False
     return True
+
+
+def compile_html(src, dest):
+    with open(src, 'rb') as f:
+        html = BeautifulSoup(f.read().decode(), "lxml")
+    # Remove comments
+    [i.extract() for i in html.findAll(text=lambda _: isinstance(_, Comment))]
+    files = [i['src'] for i in html.find_all("script")]
+    files += [i['href'] for i in html.find_all("link")]
+    # FIXME: parse <style>
+    for file_name in files:
+        matched = False
+        for i in file_names:
+            if fnmatch.fnmatch(file_name, i):
+                matched = True
+                break
+        if not matched:
+            print_err("#", file_name)
+
+    try:
+        with open(dest, "wb") as file:
+            file.write(html.prettify("utf-8"))
+        return True
+    except FileNotFoundError as e:
+        print_err(e)
+
+
+def parse_css_urls(src):
+    with open(src, 'rb') as f:
+        css = f.read().decode()
+    css = re.sub(r'\/\*.*?\*\/', '', css)
+    files = patt_css_url.findall(css)
+    for file_name in files:
+        matched = False
+        file_name = str(Path(file_name))  # collapse single dot
+        for i in file_names:
+            if fnmatch.fnmatch(file_name, i):
+                matched = True
+                break
+        if not matched:
+            print_err("#", file_name)
 
 
 class Monitor():
@@ -191,14 +235,21 @@ def build(filepath):
     elif ext == ".py":
         print(time.strftime('%H:%M:%S'), "Compiling", rel, "...", flush=True,
               end='')
+        # FIXME: mkpath?
         res = compile_py(filepath, dest.with_suffix(".js"))
+        print('done' if res else 'failed')
+    elif ext in ('.html', '.htm'):
+        print(time.strftime('%H:%M:%S'), "Compiling", rel, "...", flush=True,
+              end='')
+        mkpath(dest.parent)
+        res = compile_html(filepath, dest)
         print('done' if res else 'failed')
     else:
         print(time.strftime('%H:%M:%S'), 'Copy', rel, "...", flush=True,
               end='')
         try:
-#            if ext in ('.html', '.htm'):
-#                scripts(filepath)
+            if ext == ".css":
+                parse_css_urls(filepath)
             mkpath(dest.parent)
             shutil.copy(filepath, dest)
             print('done')
@@ -234,8 +285,7 @@ def rebuild_all():
                 n = None
                 for n, j in enumerate(glob.glob(str(dir_ext/i),
                                                 recursive=True)):
-                    j = Path(j)
-                    if not j.exists():
+                    if not Path(j).exists():
                         n = None
                     elif j not in processed:
                         build(j)
@@ -246,31 +296,22 @@ def rebuild_all():
     print("--- finished ---")
 
 
-def scripts(p):
-    from lxml import etree
-    parser = etree.HTMLParser()
-    with open(p, 'rb') as f:
-        tree = etree.fromstring(f.read().decode(), parser)
-    for s in tree.xpath('//script'):
-        print(s.get('src'))
-
-
 def file_change(file_name, actions):
     if file_name == manifest_file:
         rebuild_all()
-    else:
-        for i in file_names:
-            if fnmatch.fnmatch(file_name, i):
-                if actions[-1] in ('add', 'update', 'renamed_to'):
-                    build(dir_ext/file_name)
+        return
+    for i in file_names:
+        if fnmatch.fnmatch(file_name, i):
+            if actions[-1] in ('add', 'update', 'renamed_to'):
+                build(dir_ext/file_name)
+            else:
+                print(time.strftime('%H:%M:%S'), "Remove", file_name)
+                target = output_dir/file_name
+                if target.is_dir():
+                    shutil.rmtree(target)
                 else:
-                    print(time.strftime('%H:%M:%S'), "Remove", file_name)
-                    target = output_dir/file_name
-                    if target.is_dir():
-                        shutil.rmtree(target)
-                    else:
-                        os.remove(dot_js(target))
-                break  # already found
+                    os.remove(dot_js(target))
+            break  # already found
 
 rebuild_all()
 if args.monitor:
